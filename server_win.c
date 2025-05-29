@@ -21,7 +21,7 @@ int deck_index = 0;
 
 char *ranks[] = {"A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"};
 int values[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 0, 0, 0};
-char *suits[] = {"Spades", "Hearts", "Diamonds", "Clubs"}; // changed from symbols to words
+char *suits[] = {"Spades", "Hearts", "Diamonds", "Clubs"};
 
 void shuffle_deck()
 {
@@ -97,7 +97,7 @@ int is_sequence(Card cards[])
             }
         }
     }
-    // Sort vals ascending
+
     for (int i = 0; i < 2; i++)
     {
         for (int j = i + 1; j < 3; j++)
@@ -119,7 +119,6 @@ int is_flush(Card cards[])
            strcmp(cards[1].suit, cards[2].suit) == 0;
 }
 
-// Modified two-card evaluation: if both cards are identical and "8" or "9", count as pok.
 int evaluate_hand(Card cards[], int count)
 {
     if (count == 2)
@@ -144,7 +143,6 @@ int evaluate_hand(Card cards[], int count)
     }
 }
 
-// Sends card info to the given socket.
 void send_card(SOCKET sock, const char *prefix, Card c)
 {
     char buffer[64];
@@ -160,7 +158,7 @@ int recv_draw_decision(SOCKET client)
         memset(buffer, 0, sizeof(buffer));
         int len = recv(client, buffer, sizeof(buffer) - 1, 0);
         if (len <= 0)
-            return 0; // connection closed or error
+            return 0;
         buffer[len] = '\0';
         if (strncmp(buffer, "DRAW3", 5) == 0)
         {
@@ -177,12 +175,11 @@ int recv_draw_decision(SOCKET client)
     }
 }
 
-// New structure and function for detailed hand evaluation
 typedef struct
 {
     int rank_value;
     char description[64];
-    int high_card; // tie-breaker for straight, straightflush or triple; -1 if N/A
+    int high_card;
 } HandResult;
 
 HandResult get_hand_result(Card cards[], int count)
@@ -235,7 +232,7 @@ HandResult get_hand_result(Card cards[], int count)
                     }
                 }
             }
-            // Sort vals ascending
+
             for (int i = 0; i < 2; i++)
             {
                 for (int j = i + 1; j < 3; j++)
@@ -267,7 +264,7 @@ HandResult get_hand_result(Card cards[], int count)
                     }
                 }
             }
-            // Sort vals ascending
+
             for (int i = 0; i < 2; i++)
             {
                 for (int j = i + 1; j < 3; j++)
@@ -295,7 +292,6 @@ HandResult get_hand_result(Card cards[], int count)
     return res;
 }
 
-// Global structures สำหรับเก็บผลการแข่งขัน
 typedef struct {
     HandResult clientResult;
     int clientDraw3;
@@ -304,33 +300,29 @@ typedef struct {
 ClientData gClientData;
 HandResult gDealerResult;
 
-// ฟังก์ชันสำหรับจัดการการเล่นของ Client
+// ฟังก์ชัน Client
 DWORD WINAPI ClientGameThread(LPVOID param)
 {
     SOCKET client = *(SOCKET *)param;
     
     Card client_cards[3];
-    // For testing, force client to have two cards.
     client_cards[0] = draw_card();
     client_cards[1] = draw_card();
     
-    // ส่งไพ่ 2 ใบแรกให้ client
     send_card(client, "CARD1", client_cards[0]);
     send_card(client, "CARD2", client_cards[1]);
 
     HandResult initial = get_hand_result(client_cards, 2);
     int client_draw3;
     if (initial.rank_value >= 108)
-    { // เจอตัว pok hand
+    {
         client_draw3 = 0;
-        // ส่งข้อความแจ้ง pok (เช่น "Pok 8" หรือ "Pok 9")
         char poke_msg[32];
         sprintf(poke_msg, "%s\n", initial.description);
         send(client, poke_msg, strlen(poke_msg), 0);
     }
     else
     {
-        // แจ้ง client ให้ตัดสินใจว่าจะขอไพ่ใบที่ 3 หรือไม่
         send(client, "WAIT_FOR_DRAW\n", strlen("WAIT_FOR_DRAW\n"), 0);
 
         client_draw3 = recv_draw_decision(client);
@@ -351,10 +343,9 @@ DWORD WINAPI ClientGameThread(LPVOID param)
     return 0;
 }
 
-// ฟังก์ชันสำหรับจัดการการเล่นของ Dealer
+// ฟังก์ชัน Dealer
 DWORD WINAPI DealerGameThread(LPVOID param)
 {
-    // Dealer จะใช้ไพ่ใบใหม่จากสำรับที่เหลือ
     Card dealer_cards[3];
     dealer_cards[0] = draw_card();
     dealer_cards[1] = draw_card();
@@ -367,7 +358,7 @@ DWORD WINAPI DealerGameThread(LPVOID param)
     int dealer_draw3;
     char dealer_choice[4];
     if (dealerInitial.rank_value >= 108)
-    { // มี pok hand
+    {
         dealer_draw3 = 0;
         printf("[Dealer]: %s\n", dealerInitial.description);
     }
@@ -422,15 +413,12 @@ int main()
 
     shuffle_deck();
 
-    // สร้าง thread สำหรับจัดการ client และ dealer
     HANDLE hClientThread = CreateThread(NULL, 0, ClientGameThread, &client, 0, NULL);
     HANDLE hDealerThread = CreateThread(NULL, 0, DealerGameThread, NULL, 0, NULL);
 
-    // รอให้ทั้งสอง thread จบการทำงาน
     WaitForSingleObject(hClientThread, INFINITE);
     WaitForSingleObject(hDealerThread, INFINITE);
 
-    // เปรียบเทียบผลลัพธ์ และส่งผลให้ client ทราบ
     char result[128];
     if (gClientData.clientResult.rank_value > gDealerResult.rank_value)
     {
@@ -462,12 +450,10 @@ int main()
     }
     send(client, result, strlen(result), 0);
 
-    // ปิด socket และทำความสะอาด Winsock
     closesocket(client);
     closesocket(server);
     WSACleanup();
     
-    // ปิด handle ของ thread
     CloseHandle(hClientThread);
     CloseHandle(hDealerThread);
     

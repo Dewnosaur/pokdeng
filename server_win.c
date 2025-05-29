@@ -295,6 +295,110 @@ HandResult get_hand_result(Card cards[], int count)
     return res;
 }
 
+// Global structures สำหรับเก็บผลการแข่งขัน
+typedef struct {
+    HandResult clientResult;
+    int clientDraw3;
+} ClientData;
+
+ClientData gClientData;
+HandResult gDealerResult;
+
+// ฟังก์ชันสำหรับจัดการการเล่นของ Client
+DWORD WINAPI ClientGameThread(LPVOID param)
+{
+    SOCKET client = *(SOCKET *)param;
+    
+    Card client_cards[3];
+    // For testing, force client to have two cards.
+    client_cards[0] = draw_card();
+    client_cards[1] = draw_card();
+    
+    // ส่งไพ่ 2 ใบแรกให้ client
+    send_card(client, "CARD1", client_cards[0]);
+    send_card(client, "CARD2", client_cards[1]);
+
+    HandResult initial = get_hand_result(client_cards, 2);
+    int client_draw3;
+    if (initial.rank_value >= 108)
+    { // เจอตัว pok hand
+        client_draw3 = 0;
+        // ส่งข้อความแจ้ง pok (เช่น "Pok 8" หรือ "Pok 9")
+        char poke_msg[32];
+        sprintf(poke_msg, "%s\n", initial.description);
+        send(client, poke_msg, strlen(poke_msg), 0);
+    }
+    else
+    {
+        // แจ้ง client ให้ตัดสินใจว่าจะขอไพ่ใบที่ 3 หรือไม่
+        send(client, "WAIT_FOR_DRAW\n", strlen("WAIT_FOR_DRAW\n"), 0);
+
+        client_draw3 = recv_draw_decision(client);
+        if (client_draw3)
+        {
+            client_cards[2] = draw_card();
+            send_card(client, "CARD3", client_cards[2]);
+        }
+        send(client, "WAITING FOR DEALER\n", strlen("WAITING FOR DEALER\n"), 0);
+    }
+    // บันทึกผล client หลังจบการเล่น
+    if (client_draw3)
+        gClientData.clientResult = get_hand_result(client_cards, 3);
+    else
+        gClientData.clientResult = get_hand_result(client_cards, 2);
+    gClientData.clientDraw3 = client_draw3;
+    
+    return 0;
+}
+
+// ฟังก์ชันสำหรับจัดการการเล่นของ Dealer
+DWORD WINAPI DealerGameThread(LPVOID param)
+{
+    // Dealer จะใช้ไพ่ใบใหม่จากสำรับที่เหลือ
+    Card dealer_cards[3];
+    dealer_cards[0] = draw_card();
+    dealer_cards[1] = draw_card();
+
+    printf("\n[Dealer]: Your hand: %s of %s, %s of %s\n",
+           dealer_cards[0].rank, dealer_cards[0].suit,
+           dealer_cards[1].rank, dealer_cards[1].suit);
+
+    HandResult dealerInitial = get_hand_result(dealer_cards, 2);
+    int dealer_draw3;
+    char dealer_choice[4];
+    if (dealerInitial.rank_value >= 108)
+    { // มี pok hand
+        dealer_draw3 = 0;
+        printf("[Dealer]: %s\n", dealerInitial.description);
+    }
+    else
+    {
+        printf("[Dealer]: Do you want to draw a third card? (y/n): ");
+        fgets(dealer_choice, sizeof(dealer_choice), stdin);
+        dealer_draw3 = (dealer_choice[0]=='y' || dealer_choice[0]=='Y') ? 1 : 0;
+    }
+
+    int dealer_score;
+    if (dealer_draw3)
+    {
+        dealer_cards[2] = draw_card();
+        dealer_score = evaluate_hand(dealer_cards, 3);
+        printf("[Dealer]: Drew %s of %s\n", dealer_cards[2].rank, dealer_cards[2].suit);
+    }
+    else
+    {
+        dealer_score = evaluate_hand(dealer_cards, 2);
+    }
+    printf("[Dealer]: Your final score: %d\n", dealer_score % 100);
+
+    if (dealer_draw3)
+        gDealerResult = get_hand_result(dealer_cards, 3);
+    else
+        gDealerResult = get_hand_result(dealer_cards, 2);
+
+    return 0;
+}
+
 int main()
 {
     WSADATA wsaData;
@@ -318,132 +422,54 @@ int main()
 
     shuffle_deck();
 
-    Card client_cards[3], dealer_cards[3];
-    // For testing, force client to have two "8" cards.
-    client_cards[0] = draw_card();
-    client_cards[1] = draw_card();
-    dealer_cards[0] = draw_card();
-    dealer_cards[1] = draw_card();
+    // สร้าง thread สำหรับจัดการ client และ dealer
+    HANDLE hClientThread = CreateThread(NULL, 0, ClientGameThread, &client, 0, NULL);
+    HANDLE hDealerThread = CreateThread(NULL, 0, DealerGameThread, NULL, 0, NULL);
 
-    // Send 2 cards to client first
-    send_card(client, "CARD1", client_cards[0]);
-    send_card(client, "CARD2", client_cards[1]);
+    // รอให้ทั้งสอง thread จบการทำงาน
+    WaitForSingleObject(hClientThread, INFINITE);
+    WaitForSingleObject(hDealerThread, INFINITE);
 
-    HandResult initial = get_hand_result(client_cards, 2);
-    int client_draw3;
-    if (initial.rank_value >= 108)
-    { // pok hand detected.
-        client_draw3 = 0;
-        // Send the pok message (e.g. "pok 8" or "pok 9")
-        char poke_msg[32];
-        sprintf(poke_msg, "%s\n", initial.description);
-        send(client, poke_msg, strlen(poke_msg), 0);
-    }
-    else
-    {
-        // Tell client to decide draw or not
-        send(client, "WAIT_FOR_DRAW\n", strlen("WAIT_FOR_DRAW\n"), 0);
-
-        // Wait for client's decision
-        int client_draw3 = recv_draw_decision(client);
-        int client_score;
-        if (client_draw3)
-        {
-            client_cards[2] = draw_card();
-            send_card(client, "CARD3", client_cards[2]);
-            client_score = evaluate_hand(client_cards, 3);
-            send(client, "WAITING FOR DEALER\n", strlen("WAITING FOR DEALER\n"), 0);
-        }
-        else
-        {
-            client_score = evaluate_hand(client_cards, 2);
-            send(client, "WAITING FOR DEALER\n", strlen("WAITING FOR DEALER\n"), 0);
-        }
-    }
-
-    // Dealer decides to draw or not
-    printf("\n[Dealer]: Your hand: %s of %s, %s of %s\n",
-           dealer_cards[0].rank, dealer_cards[0].suit,
-           dealer_cards[1].rank, dealer_cards[1].suit);
-
-    char dealer_choice[4];
-
-    HandResult dealerInitial = get_hand_result(dealer_cards, 2);
-    int dealer_draw3;
-    if (dealerInitial.rank_value >= 108) { // dealer has pok 8 or pok 9
-        dealer_draw3 = 0;
-        printf("[Dealer]: %s\n", dealerInitial.description);
-    } else {
-        printf("[Dealer]: Do you want to draw a third card? (y/n): ");
-        char dealer_choice[4];
-        fgets(dealer_choice, sizeof(dealer_choice), stdin);
-        dealer_draw3 = (dealer_choice[0]=='y' || dealer_choice[0]=='Y') ? 1 : 0;
-    }
-
-    int dealer_score;
-    if (dealer_draw3) {
-        dealer_cards[2] = draw_card();
-        dealer_score = evaluate_hand(dealer_cards, 3);
-        printf("[Dealer]: Drew %s of %s\n", dealer_cards[2].rank, dealer_cards[2].suit);
-    } else {
-        dealer_score = evaluate_hand(dealer_cards, 2);
-    }
-    printf("[Dealer]: Your final score: %d\n", dealer_score % 100);
-
-    // Compare results using detailed hand evaluation
-    HandResult clientResult, dealerResult;
-    if (client_draw3)
-    {
-        clientResult = get_hand_result(client_cards, 3);
-    }
-    else
-    {
-        clientResult = get_hand_result(client_cards, 2);
-    }
-    if (dealer_choice[0] == 'y' || dealer_choice[0] == 'Y')
-    {
-        dealerResult = get_hand_result(dealer_cards, 3);
-    }
-    else
-    {
-        dealerResult = get_hand_result(dealer_cards, 2);
-    }
-
+    // เปรียบเทียบผลลัพธ์ และส่งผลให้ client ทราบ
     char result[128];
-    if (clientResult.rank_value > dealerResult.rank_value)
+    if (gClientData.clientResult.rank_value > gDealerResult.rank_value)
     {
-        sprintf(result, "RESULT: You win! (%s vs %s)\n", clientResult.description, dealerResult.description);
+        sprintf(result, "RESULT: You win! (%s vs %s)\n", 
+                        gClientData.clientResult.description, gDealerResult.description);
     }
-    else if (clientResult.rank_value < dealerResult.rank_value)
+    else if (gClientData.clientResult.rank_value < gDealerResult.rank_value)
     {
-        sprintf(result, "RESULT: Dealer wins! (%s vs %s)\n", dealerResult.description, clientResult.description);
+        sprintf(result, "RESULT: Dealer wins! (%s vs %s)\n", 
+                        gDealerResult.description, gClientData.clientResult.description);
     }
     else
     {
-        if (clientResult.high_card != -1 && dealerResult.high_card != -1)
+        if (gClientData.clientResult.high_card != -1 && gDealerResult.high_card != -1)
         {
-            if (clientResult.high_card > dealerResult.high_card)
-            {
-                sprintf(result, "RESULT: You win! (%s vs %s)\n", clientResult.description, dealerResult.description);
-            }
-            else if (clientResult.high_card < dealerResult.high_card)
-            {
-                sprintf(result, "RESULT: Dealer wins! (%s vs %s)\n", dealerResult.description, clientResult.description);
-            }
+            if (gClientData.clientResult.high_card > gDealerResult.high_card)
+                sprintf(result, "RESULT: You win! (%s vs %s)\n", 
+                                gClientData.clientResult.description, gDealerResult.description);
+            else if (gClientData.clientResult.high_card < gDealerResult.high_card)
+                sprintf(result, "RESULT: Dealer wins! (%s vs %s)\n", 
+                                gDealerResult.description, gClientData.clientResult.description);
             else
-            {
-                sprintf(result, "RESULT: Draw (%s)\n", clientResult.description);
-            }
+                sprintf(result, "RESULT: Draw (%s)\n", gClientData.clientResult.description);
         }
         else
         {
-            sprintf(result, "RESULT: Draw (%s)\n", clientResult.description);
+            sprintf(result, "RESULT: Draw (%s)\n", gClientData.clientResult.description);
         }
     }
     send(client, result, strlen(result), 0);
 
+    // ปิด socket และทำความสะอาด Winsock
     closesocket(client);
     closesocket(server);
     WSACleanup();
+    
+    // ปิด handle ของ thread
+    CloseHandle(hClientThread);
+    CloseHandle(hDealerThread);
+    
     return 0;
 }

@@ -345,7 +345,7 @@ int main()
         send(client, "WAIT_FOR_DRAW\n", strlen("WAIT_FOR_DRAW\n"), 0);
 
         // Wait for client's decision
-        int client_draw3 = recv_draw_decision(client);
+        client_draw3 = recv_draw_decision(client);
         int client_score;
         if (client_draw3)
         {
